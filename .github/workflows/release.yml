@@ -1,11 +1,14 @@
 name: release
 
-# Push a tag "vX.Y.Z" matching fernet_fields.__version__ once ci is green.
-# PyPI trusted publisher: repository amanjain/djfernet-redux, workflow
-# release.yml, environment pypi.
+# Push a tag "vX.Y.Z" matching fernet_fields.__version__ once ci is green, with a
+# "## X.Y.Z" section in CHANGES.md. PyPI trusted publisher: repository
+# amanjain/djfernet-redux, workflow release.yml, environment pypi.
 on:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -19,12 +22,23 @@ jobs:
         run: |
           version=$(sed -n "s/^__version__ = '\(.*\)'$/\1/p" fernet_fields/__init__.py)
           test "${GITHUB_REF_NAME}" = "v${version}"
+      - name: Release notes from CHANGES.md
+        run: |
+          awk -v heading="## ${GITHUB_REF_NAME#v}" '
+            /^## / { if (found) exit; found = ($0 == heading || index($0, heading " ") == 1); next }
+            found
+          ' CHANGES.md > notes.md
+          grep -q . notes.md || { echo "::error::CHANGES.md has no section for ${GITHUB_REF_NAME#v}"; exit 1; }
       - run: uv build
       - run: uvx twine check --strict dist/*
       - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: notes.md
 
   publish:
     needs: build
@@ -40,3 +54,26 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --verify-tag
+          --title "djfernet-redux ${GITHUB_REF_NAME#v}"
+          --notes-file notes.md
