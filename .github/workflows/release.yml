@@ -1,0 +1,42 @@
+name: release
+
+# Push a tag "vX.Y.Z" matching fernet_fields.__version__ once ci is green.
+# PyPI trusted publisher: repository amanjain/djfernet-redux, workflow
+# release.yml, environment pypi.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: false
+      - name: Check the tag matches the package version
+        run: |
+          version=$(sed -n "s/^__version__ = '\(.*\)'$/\1/p" fernet_fields/__init__.py)
+          test "${GITHUB_REF_NAME}" = "v${version}"
+      - run: uv build
+      - run: uvx twine check --strict dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/djfernet-redux/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

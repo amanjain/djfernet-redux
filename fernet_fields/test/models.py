@@ -1,3 +1,4 @@
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 
 import fernet_fields as fields
@@ -29,3 +30,23 @@ class EncryptedDateTime(models.Model):
 
 class EncryptedNullable(models.Model):
     value = fields.EncryptedIntegerField(null=True)
+
+
+class EncryptedBinary(models.Model):
+    value = fields.EncryptedBinaryField()
+
+
+class EncryptedBigIntegerField(fields.EncryptedField, models.BigIntegerField):
+    """A custom field built the way the README describes."""
+
+
+class EncryptedBigInt(models.Model):
+    value = EncryptedBigIntegerField()
+
+
+class EncryptedJSON(models.Model):
+    value = fields.EncryptedJSONField(null=True)
+
+
+class EncryptedJSONWithEncoder(models.Model):
+    value = fields.EncryptedJSONField(encoder=DjangoJSONEncoder)

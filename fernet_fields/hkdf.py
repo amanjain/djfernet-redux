@@ -13,7 +13,7 @@ salt = getattr(settings, 'DJFERNET_PREFIX', b'django-fernet-fields') + b'-hkdf-s
 
 
 def derive_fernet_key(input_key):
-    """Derive a 32-bit b64-encoded Fernet key from arbitrary input key."""
+    """Derive a 32-byte b64-encoded Fernet key from arbitrary input key."""
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,

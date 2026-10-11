@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "djfernet-redux"
+dynamic = ["version"]
+description = "Fernet-encrypted Django model fields: a maintained drop-in replacement for djfernet and django-fernet-fields."
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE.txt", "AUTHORS.md"]
+requires-python = ">=3.8"
+authors = [
+    { name = "Carl Meyer" },
+    { name = "Jess Johnson" },
+    { name = "James Pic", email = "jamespic@gmail.com" },
+]
+maintainers = [{ name = "Aman Kumar Jain" }]
+keywords = ["django", "fernet", "encryption", "cryptography", "fields"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 2.2",
+    "Framework :: Django :: 3.0",
+    "Framework :: Django :: 3.1",
+    "Framework :: Django :: 3.2",
+    "Framework :: Django :: 4.0",
+    "Framework :: Django :: 4.1",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Framework :: Django :: 5.1",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "cryptography>=3.1",
+    "Django>=2.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/amanjain/djfernet-redux"
+Source = "https://github.com/amanjain/djfernet-redux"
+Issues = "https://github.com/amanjain/djfernet-redux/issues"
+Changelog = "https://github.com/amanjain/djfernet-redux/blob/main/CHANGES.md"
+
+[tool.setuptools]
+packages = ["fernet_fields"]
+
+[tool.setuptools.dynamic]
+version = { attr = "fernet_fields.__version__" }

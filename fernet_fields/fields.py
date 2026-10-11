@@ -1,7 +1,12 @@
-from cryptography.fernet import Fernet, MultiFernet
+import json
 
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+
+from django import forms
 from django.conf import settings
-from django.core.exceptions import FieldError, ImproperlyConfigured
+from django.core.exceptions import (
+    FieldError, ImproperlyConfigured, ValidationError,
+)
 from django.db import models
 from django.utils.encoding import force_bytes
 from django.utils.functional import cached_property
@@ -19,7 +24,13 @@ __all__ = [
     'EncryptedDateField',
     'EncryptedDateTimeField',
     'EncryptedBinaryField',
+    'EncryptedJSONField',
+    'DecryptionError',
 ]
+
+
+class DecryptionError(InvalidToken):
+    """A stored value can't be decrypted with the configured keys."""
 
 
 class EncryptedField(models.Field):
@@ -66,6 +77,15 @@ class EncryptedField(models.Field):
     def get_internal_type(self):
         return self._internal_type
 
+    def get_db_prep_value(self, value, connection, prepared=False):
+        if isinstance(self, models.IntegerField):
+            # Django 4.2+ adapts integers by get_internal_type(), which is
+            # 'BinaryField' here: psycopg 3 has no adapter for it.
+            return models.Field.get_db_prep_value(
+                self, value, connection, prepared)
+        return super(EncryptedField, self).get_db_prep_value(
+            value, connection, prepared)
+
     def get_db_prep_save(self, value, connection):
         value = super(
             EncryptedField, self
@@ -74,10 +94,22 @@ class EncryptedField(models.Field):
             retval = self.fernet.encrypt(force_bytes(value))
             return connection.Database.Binary(retval)
 
+    def _decrypt(self, value):
+        try:
+            return self.fernet.decrypt(bytes(value))
+        except InvalidToken as exc:
+            raise DecryptionError(
+                "Can't decrypt %s: the stored value was not encrypted with "
+                "any of the configured keys. Check FERNET_KEYS (or "
+                "SECRET_KEY when FERNET_KEYS is not set), FERNET_USE_HKDF, "
+                "DJFERNET_PREFIX (data written by djfernet < 0.8 needs "
+                "b'djfernet'), and that the column holds encrypted data."
+                % self
+            ) from exc
+
     def from_db_value(self, value, expression, connection, *args):
         if value is not None:
-            value = bytes(value)
-            return self.to_python(force_str(self.fernet.decrypt(value)))
+            return self.to_python(force_str(self._decrypt(value)))
 
     @cached_property
     def validators(self):
@@ -134,6 +166,65 @@ class EncryptedDateTimeField(EncryptedField, models.DateTimeField):
 
 
 class EncryptedBinaryField(EncryptedField, models.BinaryField):
+    def get_db_prep_value(self, value, connection, prepared=False):
+        # Encrypt the bytes, not BinaryField's driver Binary() wrapper: on
+        # PostgreSQL that wrapper's text was encrypted instead of the value.
+        value = models.Field.get_db_prep_value(
+            self, value, connection, prepared)
+        if value is not None:
+            return bytes(value)
+
     def from_db_value(self, value, expression, connection, *args):
         if value is not None:
-            return self.to_python(self.fernet.decrypt(bytes(value)))
+            return self.to_python(self._decrypt(value))
+
+
+class EncryptedJSONField(EncryptedField, models.TextField):
+    """Any JSON-serializable value, encrypted as its JSON text."""
+
+    def __init__(self, *args, encoder=None, decoder=None, **kwargs):
+        self.encoder = encoder
+        self.decoder = decoder
+        super(EncryptedJSONField, self).__init__(*args, **kwargs)
+
+    def deconstruct(self):
+        name, path, args, kwargs = super(
+            EncryptedJSONField, self).deconstruct()
+        if self.encoder is not None:
+            kwargs['encoder'] = self.encoder
+        if self.decoder is not None:
+            kwargs['decoder'] = self.decoder
+        return name, path, args, kwargs
+
+    def to_python(self, value):
+        return value
+
+    def get_prep_value(self, value):
+        if value is None:
+            return value
+        return json.dumps(value, cls=self.encoder)
+
+    def from_db_value(self, value, expression, connection, *args):
+        if value is not None:
+            return json.loads(self._decrypt(value), cls=self.decoder)
+
+    def value_to_string(self, obj):
+        return self.value_from_object(obj)
+
+    def validate(self, value, model_instance):
+        super(EncryptedJSONField, self).validate(value, model_instance)
+        try:
+            json.dumps(value, cls=self.encoder)
+        except TypeError:
+            raise ValidationError(
+                'Value must be valid JSON.', code='invalid',
+                params={'value': value},
+            )
+
+    def formfield(self, **kwargs):
+        return super(EncryptedJSONField, self).formfield(**{
+            'form_class': forms.JSONField,
+            'encoder': self.encoder,
+            'decoder': self.decoder,
+            **kwargs,
+        })

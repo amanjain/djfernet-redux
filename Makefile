@@ -1,4 +1,4 @@
 test:
-	coverage erase
-	tox
-	coverage html
+	uvx coverage erase
+	uvx --with tox-uv tox
+	uvx coverage html
