@@ -6,6 +6,7 @@ fixed or pull request merged.
 Please file bugs and send pull requests to the
 [GitHub repository](https://github.com/amanjain/djfernet-redux) and
 [issue tracker](https://github.com/amanjain/djfernet-redux/issues).
+Report security issues privately instead, as described in [SECURITY.md](SECURITY.md).
 
 ## Submitting issues
 

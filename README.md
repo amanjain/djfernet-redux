@@ -204,5 +204,7 @@ commit history of both projects is preserved in this repository.
   [CONTRIBUTING.md](https://github.com/amanjain/djfernet-redux/blob/main/CONTRIBUTING.md)
 - What changed in each release:
   [CHANGES.md](https://github.com/amanjain/djfernet-redux/blob/main/CHANGES.md)
+- Security issues: report privately, see
+  [SECURITY.md](https://github.com/amanjain/djfernet-redux/blob/main/SECURITY.md)
 - Install from [PyPI](https://pypi.org/project/djfernet-redux/):
   `pip install djfernet-redux`
