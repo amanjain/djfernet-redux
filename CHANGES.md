@@ -6,6 +6,7 @@
 - Add audit_encrypted_fields(), a read-only scan that reports unreadable encrypted fields by row identifier without exposing stored values.
 - Add encrypt_field_values() for an explicit, atomic RunPython copy into a separate encrypted column, with a tested complete migration example.
 - Add an optional MaskedEncryptedAdminMixin that excludes encrypted edit fields and masks their named admin displays without reading their values.
+- Add opt-in searchable encrypted email using a separate HMAC equality column, normalized uniqueness and synchronized instance/bulk writes.
 
 ## 1.0.0 (djfernet-redux)
 

@@ -22,6 +22,173 @@ from . import models
 
 
 class TestEncryptedField(object):
+    def test_email_iexact_lookup_is_rejected(self, db):
+        """Reproduce the lookup required by allauth (upstream #24)."""
+        obj = models.EncryptedEmail.objects.create(value='person@example.com')
+
+        assert models.EncryptedEmail.objects.get(pk=obj.pk).value == 'person@example.com'
+        with pytest.raises(FieldError, match="EncryptedEmailField 'iexact'"):
+            models.EncryptedEmail.objects.filter(value__iexact='PERSON@example.com').exists()
+
+    def test_email_unique_constraint_is_rejected(self):
+        """An encrypted email cannot be used as a unique login identifier."""
+        with pytest.raises(ImproperlyConfigured, match='does not support unique=True'):
+            fields.EncryptedEmailField(unique=True)
+
+    def test_searchable_email_encrypts_and_supports_case_insensitive_lookup(self, db):
+        from fernet_fields.email import email_digest
+
+        model = models.EncryptedSearchableEmail
+        obj = model.objects.create(value=' Person@Example.COM ')
+        found = model.objects.get(value__iexact='PERSON@example.com')
+        assert found.pk == obj.pk
+        assert found.value == 'person@example.com'
+        assert model.objects.get(value='person@example.com').pk == obj.pk
+        field = model._meta.get_field('value')
+        with connection.cursor() as cur:
+            cur.execute('SELECT value, value_hash FROM %s WHERE id = %%s'
+                        % model._meta.db_table, [obj.pk])
+            token, digest = cur.fetchone()
+        assert b'person@example.com' not in bytes(token)
+        assert field.fernet.decrypt(bytes(token)) == b'person@example.com'
+        assert digest == email_digest(field, 'person@example.com')
+
+    def test_searchable_email_database_enforces_normalized_uniqueness(self, db):
+        from django.db import IntegrityError, transaction
+        from fernet_fields.email import email_digest
+
+        model = models.EncryptedSearchableEmail
+        model.objects.create(value='person@example.com')
+        with pytest.raises(IntegrityError), transaction.atomic():
+            model.objects.create(value='PERSON@example.com')
+        assert model.objects.count() == 1
+        assert email_digest(model._meta.get_field('value'), 'person@example.com')
+
+    def test_searchable_email_updates_keep_hash_in_sync(self, db):
+        from fernet_fields.email import email_digest
+
+        model = models.EncryptedSearchableEmail
+        obj = model.objects.create(value='first@example.com')
+        obj.value = 'Second@Example.com'
+        obj.save(update_fields=['value'])
+        assert model.objects.get(value__iexact='SECOND@example.com').pk == obj.pk
+        assert not model.objects.filter(value='first@example.com').exists()
+        assert model.objects.filter(pk=obj.pk).update(value='third@example.com') == 1
+        obj.refresh_from_db()
+        assert obj.value_hash == email_digest(model._meta.get_field('value'), obj.value)
+        assert model.objects.get(value='THIRD@example.com').pk == obj.pk
+
+    def test_searchable_email_bulk_writes_keep_hash_in_sync(self, db):
+        from fernet_fields.email import email_digest
+
+        model = models.EncryptedSearchableEmail
+        model.objects.bulk_create([
+            model(value='first@example.com'), model(value='second@example.com')])
+        objects = list(model.objects.order_by('pk'))
+        for index, obj in enumerate(objects):
+            obj.value = 'new%s@example.com' % index
+        model.objects.bulk_update(objects, ['value'], batch_size=1)
+        for index, obj in enumerate(objects):
+            found = model.objects.get(value__iexact='NEW%s@example.com' % index)
+            assert found.pk == obj.pk
+            assert found.value_hash == email_digest(model._meta.get_field('value'), found.value)
+
+    def test_searchable_email_rejects_unsafe_updates_and_lookups(self, db):
+        from django.db.models import F
+        from fernet_fields.email import SearchableEncryptedEmailField
+
+        model = models.EncryptedSearchableEmail
+        obj = model.objects.create(value='person@example.com')
+        with pytest.raises(ValueError, match='expressions'):
+            model.objects.filter(pk=obj.pk).update(value=F('value'))
+        with pytest.raises(ValueError, match='hash'):
+            model.objects.filter(pk=obj.pk).update(value_hash='tampered')
+        with pytest.raises(FieldError):
+            model.objects.filter(value__contains='person').exists()
+        field = model._meta.get_field('value')
+        _, path, args, kwargs = field.deconstruct()
+        assert path == 'fernet_fields.email.SearchableEncryptedEmailField'
+        assert SearchableEncryptedEmailField(*args, **kwargs).hash_field == 'value_hash'
+        assert field.check() == []
+
+    def test_searchable_email_requires_a_dedicated_hash_key(self, db, settings):
+        from fernet_fields.email import email_digest
+
+        del settings.FERNET_EMAIL_HASH_KEY
+        with pytest.raises(ImproperlyConfigured, match='FERNET_EMAIL_HASH_KEY'):
+            email_digest(models.EncryptedSearchableEmail._meta.get_field('value'), 'a@example.com')
+
+    def test_searchable_email_nulls_and_multiple_columns(self, db):
+        model = models.EncryptedSearchableEmail
+        first = model.objects.create(value='first@example.com')
+        model.objects.create(value='second@example.com')
+        assert model.objects.filter(optional=None).count() == 2
+        first.optional = 'OPTIONAL@example.com'
+        first.save(update_fields=['optional'])
+        assert model.objects.get(optional__iexact='optional@example.com').pk == first.pk
+        first.optional = None
+        first.save(update_fields=['optional'])
+        assert model.objects.filter(optional__isnull=True).count() == 2
+        first.refresh_from_db()
+        assert first.optional_hash is None
+
+    def test_searchable_email_hash_is_independent_of_encryption_rotation(self, db, settings):
+        from fernet_fields.email import email_digest
+
+        field = models.EncryptedSearchableEmail._meta.get_field('value')
+        digest = email_digest(field, 'person@example.com')
+        token = field.fernet.encrypt(b'person@example.com')
+        settings.FERNET_KEYS = ['new-encryption-key', 'secret']
+        rotated = field.clone()
+        rotated.model = field.model
+        rotated.set_attributes_from_name(field.name)
+        assert email_digest(rotated, 'person@example.com') == digest
+        assert rotated.from_db_value(token, None, connection) == 'person@example.com'
+
+    def test_searchable_email_full_clean_checks_uniqueness(self, db):
+        from fernet_fields.email import email_digest
+
+        model = models.EncryptedSearchableEmail
+        first = model(value='person@example.com')
+        first.full_clean()
+        assert first.value_hash == email_digest(model._meta.get_field('value'), first.value)
+        first.save()
+        duplicate = model(value='PERSON@example.com')
+        with pytest.raises(ValidationError):
+            duplicate.full_clean()
+
+    def test_searchable_email_checks_invalid_hash_configuration(self, settings):
+        from fernet_fields.email import email_digest
+
+        field = models.EncryptedSearchableEmail._meta.get_field('value')
+        invalid = field.clone()
+        invalid.model = field.model
+        invalid.set_attributes_from_name(field.name)
+        invalid.hash_field = 'missing'
+        assert 'fernet_fields.E001' in [error.id for error in invalid.check()]
+        settings.FERNET_EMAIL_HASH_KEY = 'too-short'
+        with pytest.raises(ImproperlyConfigured):
+            email_digest(field, 'person@example.com')
+
+    def test_searchable_email_historical_backfill_populates_both_columns(self, db):
+        from django.db.migrations.state import ModelState, ProjectState
+        from django.db.migrations.writer import MigrationWriter
+        from fernet_fields.email import email_digest
+
+        state = ProjectState()
+        state.add_model(ModelState.from_model(models.EncryptedSearchableEmail))
+        historical = state.apps.get_model('test', 'EncryptedSearchableEmail')
+        field = historical._meta.get_field('value')
+        code, imports = MigrationWriter.serialize(field)
+        assert "hash_field='value_hash'" in code
+        assert 'import fernet_fields.email' in imports
+        obj = models.EncryptedSearchableEmail.objects.create(value='person@example.com')
+        # Historical base-manager writes bypass the custom queryset update hooks.
+        historical._base_manager.filter(pk=obj.pk).update(
+            value='NEXT@example.com', value_hash=email_digest(field, 'NEXT@example.com'))
+        found = models.EncryptedSearchableEmail.objects.get(value__iexact='next@example.com')
+        assert found.pk == obj.pk
+
     def test_key_from_settings(self, settings):
         """If present, use settings.FERNET_KEYS."""
         settings.FERNET_KEYS = ['secret']

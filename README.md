@@ -265,6 +265,84 @@ of the bytes themselves, so those values read back as text such as
 values). djfernet-redux encrypts the bytes themselves; re-save affected values from
 their original source.
 
+## Searchable encrypted email (opt-in)
+
+The ordinary `EncryptedEmailField` remains non-searchable. When email equality
+lookup is needed, use a separate HMAC-SHA256 column alongside randomized Fernet
+ciphertext. Generate a dedicated random key (for example `secrets.token_hex(32)`),
+store it securely, and configure `FERNET_EMAIL_HASH_KEY`; do not reuse `SECRET_KEY`
+or an encryption key.
+
+```python
+from django.db import models
+from fernet_fields.email import (
+    SearchableEncryptedEmailField, SearchableEncryptedEmailManager,
+    SearchableEncryptedEmailMixin,
+)
+
+
+class Customer(SearchableEncryptedEmailMixin, models.Model):
+    email = SearchableEncryptedEmailField(hash_field="email_hash")
+    email_hash = models.CharField(
+        max_length=64, unique=True, editable=False, blank=True,
+    )
+    objects = SearchableEncryptedEmailManager()
+
+
+customer = Customer.objects.get(email__iexact="PERSON@example.com")
+```
+
+Values are stripped and lowercased before storage and hashing. `exact` and `iexact`
+both compare normalized addresses. Other value lookups remain unsupported. Put
+`unique=True` on the companion hash column, not the encrypted field. Nullable
+addresses require `null=True` on both columns.
+
+The model mixin and manager are required: they keep hashes synchronized on
+`save()`, `save(update_fields=...)`, `update()`, `bulk_create()` and `bulk_update()`.
+Email updates must supply strings or `None`, not SQL expressions. Hash-only updates
+are rejected. Email `bulk_update()` uses atomic per-row updates rather than one
+CASE statement. Use these APIs for writes; raw SQL and direct `save_base()` calls
+bypass their synchronization.
+
+For a custom auth model, put the mixin before your existing user base class and
+build its existing user manager with
+`BaseUserManager.from_queryset(SearchableEncryptedEmailQuerySet)` (or the
+corresponding existing manager class). Retain its user-creation methods. This
+supports the email equality query used by allauth; it does not replace allauth's
+adapter, user model or `EmailAddress` table. Other email copies, including allauth's
+own table, still need a separate data-protection decision. A hash-column constraint
+does not make the encrypted field itself a Django `USERNAME_FIELD` with
+`unique=True`.
+
+The index reveals which normalized addresses are equal within a column. The
+separate secret key prevents an unkeyed dictionary lookup against the database;
+anyone with that key can still test candidate addresses. Each digest is bound to
+its model label and field name. Keep the hash key stable when rotating Fernet
+keys. A model/field rename or hash-key change requires rebuilding the index before
+using lookups again.
+
+For existing rows, pause writes and add/backfill the hash column before enforcing
+uniqueness or enabling searchable lookup. Resolve duplicate normalized addresses
+first. In a historical `RunPython` model, explicitly populate both columns:
+
+```python
+from fernet_fields.email import email_digest
+
+
+def populate_email_hashes(apps, schema_editor):
+    Customer = apps.get_model("myapp", "Customer")
+    field = Customer._meta.get_field("email")
+    rows = Customer._base_manager.using(schema_editor.connection.alias)
+    for customer in rows.only("pk", "email").iterator(chunk_size=500):
+        rows.filter(pk=customer.pk).update(
+            email=customer.email,
+            email_hash=email_digest(field, customer.email),
+        )
+```
+
+Run the backfill inside an atomic migration. Historical managers may not retain
+the runtime queryset hooks, so explicitly assigning the hash avoids relying on them.
+
 ## Credits
 
 djfernet-redux continues the work of the people who built and maintained this library,
