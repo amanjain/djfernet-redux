@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Accept text-encoded Fernet tokens and report invalid input with a field-specific DecryptionError; remove the known-failure markers from the regression tests.
+- Add audit_encrypted_fields(), a read-only scan that reports unreadable encrypted fields by row identifier without exposing stored values.
 
 ## 1.0.0 (djfernet-redux)
 

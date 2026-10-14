@@ -35,6 +35,85 @@ class TestEncryptedField(object):
 
         assert f.keys == [settings.SECRET_KEY]
 
+    @pytest.mark.parametrize('bad_value', [
+        b'legacy plaintext',
+        Fernet(Fernet.generate_key()).encrypt(b'wrong-key secret'),
+        b'gAAAA-truncated-token',
+    ], ids=['plaintext', 'different-key', 'truncated-token'])
+    def test_bad_row_interrupts_whole_queryset(self, db, bad_value):
+        """Reproduce why a bulk ORM scan cannot audit a damaged table."""
+        first = models.EncryptedText.objects.create(value='healthy first')
+        broken = models.EncryptedText.objects.create(value='placeholder')
+        last = models.EncryptedText.objects.create(value='healthy last')
+        with connection.cursor() as cur:
+            cur.execute(
+                'UPDATE %s SET value = %%s WHERE id = %%s'
+                % models.EncryptedText._meta.db_table,
+                [connection.Database.Binary(bad_value), broken.pk],
+            )
+
+        with pytest.raises(fields.DecryptionError) as exc:
+            list(models.EncryptedText.objects.order_by('pk'))
+
+        # The failing scan leaves healthy rows readable and the bad row intact.
+        assert models.EncryptedText.objects.get(pk=first.pk).value == 'healthy first'
+        assert models.EncryptedText.objects.get(pk=last.pk).value == 'healthy last'
+        assert models.EncryptedText.objects.count() == 3
+        with connection.cursor() as cur:
+            cur.execute(
+                'SELECT value FROM %s WHERE id = %%s'
+                % models.EncryptedText._meta.db_table,
+                [broken.pk],
+            )
+            assert bytes(cur.fetchone()[0]) == bad_value
+        assert 'test.EncryptedText.value' in str(exc.value)
+        assert bad_value.decode('ascii') not in str(exc.value)
+
+        from fernet_fields.audit import audit_encrypted_fields
+
+        failures = list(audit_encrypted_fields(
+            models.EncryptedText.objects.order_by('pk'), batch_size=1))
+        assert len(failures) == 1
+        assert failures[0].model == 'test.EncryptedText'
+        assert failures[0].pk == broken.pk
+        assert failures[0].field == 'value'
+        assert failures[0].reason == 'cannot-decrypt'
+        assert bad_value.decode('ascii') not in repr(failures)
+        assert list(audit_encrypted_fields(
+            models.EncryptedText.objects.filter(pk=last.pk))) == []
+
+    @pytest.mark.parametrize('options', [
+        {'batch_size': 0}, {'fields': ['id']}, {'fields': ['missing']},
+    ])
+    def test_audit_rejects_invalid_options(self, db, options):
+        from fernet_fields.audit import audit_encrypted_fields
+
+        with pytest.raises(ValueError):
+            list(audit_encrypted_fields(models.EncryptedText.objects.all(), **options))
+
+    def test_audit_empty_queryset(self, db):
+        from fernet_fields.audit import audit_encrypted_fields
+
+        assert list(audit_encrypted_fields(models.EncryptedText.objects.none())) == []
+
+    def test_audit_reports_invalid_decrypted_values_without_exposing_them(self, db):
+        from fernet_fields.audit import audit_encrypted_fields
+
+        obj = models.EncryptedJSON.objects.create(value={'private': 'original'})
+        field = models.EncryptedJSON._meta.get_field('value')
+        token = field.fernet.encrypt(b'private-invalid-json')
+        with connection.cursor() as cur:
+            cur.execute('UPDATE %s SET value = %%s WHERE id = %%s'
+                        % models.EncryptedJSON._meta.db_table,
+                        [connection.Database.Binary(token), obj.pk])
+        failures = list(audit_encrypted_fields(models.EncryptedJSON.objects.all()))
+        assert len(failures) == 1
+        assert failures[0].reason == 'invalid-value'
+        assert 'private-invalid-json' not in repr(failures)
+        assert list(audit_encrypted_fields(models.EncryptedJSON.objects.none())) == []
+        # Filtering must be honored; audits must not accidentally scan all rows.
+        assert list(audit_encrypted_fields(models.EncryptedJSON.objects.filter(pk=-1))) == []
+
     def test_key_rotation(self, settings):
         """Can supply multiple `keys` for key rotation."""
         settings.FERNET_KEYS = ['key1', 'key2']
