@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add encrypt_field_values() for an explicit, atomic RunPython copy into a separate encrypted column, with a tested complete migration example.
+
 ## 1.0.0 (djfernet-redux)
 
 First release as `djfernet-redux`, a drop-in replacement for djfernet 0.8.1
