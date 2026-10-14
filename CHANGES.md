@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Accept text-encoded Fernet tokens and report invalid input with a field-specific DecryptionError; remove the known-failure markers from the regression tests.
+
 ## 1.0.0 (djfernet-redux)
 
 First release as `djfernet-redux`, a drop-in replacement for djfernet 0.8.1

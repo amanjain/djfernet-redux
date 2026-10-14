@@ -46,6 +46,43 @@ class TestEncryptedField(object):
         assert f.fernet.decrypt(enc1) == b'enc1'
         assert f.fernet.decrypt(enc2) == b'enc2'
 
+    @pytest.mark.parametrize('value', ['private-invalid-token', 'café-private-value'])
+    def test_invalid_text_input_has_decryption_error(self, value):
+        field = models.EncryptedText._meta.get_field('value')
+
+        with pytest.raises(fields.DecryptionError) as exc:
+            field.from_db_value(value, None, connection)
+
+        assert 'test.EncryptedText.value' in str(exc.value)
+        assert value not in str(exc.value)
+
+    @pytest.mark.parametrize('value', [10 ** 12, [1, 2, 3], object()])
+    def test_invalid_storage_types_have_decryption_error(self, value):
+        field = models.EncryptedText._meta.get_field('value')
+        with pytest.raises(fields.DecryptionError):
+            field.from_db_value(value, None, connection)
+
+    def test_existing_text_column_can_be_read(self, transactional_db):
+        encrypted = models.EncryptedText._meta.get_field('value')
+        plain = dj_models.TextField()
+        plain.set_attributes_from_name('value')
+        plain.model = models.EncryptedText
+        with connection.schema_editor() as editor:
+            editor.alter_field(models.EncryptedText, encrypted, plain)
+        try:
+            obj = models.EncryptedText.objects.create(value='private legacy value')
+            with connection.cursor() as cur:
+                cur.execute('UPDATE %s SET value = CAST(value AS TEXT) WHERE id = %%s'
+                            % models.EncryptedText._meta.db_table, [obj.pk])
+                cur.execute('SELECT value FROM %s WHERE id = %%s'
+                            % models.EncryptedText._meta.db_table, [obj.pk])
+                assert isinstance(cur.fetchone()[0], str)
+            assert models.EncryptedText.objects.get(pk=obj.pk).value == 'private legacy value'
+        finally:
+            with connection.schema_editor() as editor:
+                editor.delete_model(models.EncryptedText)
+                editor.create_model(models.EncryptedText)
+
     def test_no_hkdf(self, settings):
         """Can set FERNET_USE_HKDF=False to avoid HKDF."""
         settings.FERNET_USE_HKDF = False
@@ -103,6 +140,21 @@ class TestEncryptedFieldQueries(object):
         found = model.objects.get()
 
         assert found.value == vals[0]
+
+    @pytest.mark.parametrize('encoding', ['ascii', 'postgres-hex'])
+    def test_read_text_encoded_ciphertext(self, db, model, vals, encoding):
+        obj = model.objects.create(value=vals[0])
+        field = model._meta.get_field('value')
+        with connection.cursor() as cur:
+            cur.execute(
+                'SELECT value FROM %s WHERE id = %%s' % model._meta.db_table,
+                [obj.pk],
+            )
+            token = bytes(cur.fetchone()[0])
+
+        # Some legacy schemas return the same token as text rather than bytes.
+        text = token.decode('ascii') if encoding == 'ascii' else '\\x' + token.hex()
+        assert field.from_db_value(text, None, connection) == vals[0]
 
     def test_update_and_select(self, db, model, vals):
         """Data round-trips through update and select."""

@@ -96,8 +96,20 @@ class EncryptedField(models.Field):
 
     def _decrypt(self, value):
         try:
-            return self.fernet.decrypt(bytes(value))
-        except InvalidToken as exc:
+            if isinstance(value, str):
+                # PostgreSQL casts bytea to its authenticated token's hex text.
+                if value.startswith('\\x'):
+                    token = bytes.fromhex(value[2:])
+                else:
+                    token = value.encode('ascii')
+            elif isinstance(value, (bytes, bytearray, memoryview)):
+                token = bytes(value)
+            else:
+                # bytes(an_integer) allocates that many bytes; malformed storage
+                # must not trigger an unbounded allocation or accept arbitrary values.
+                raise InvalidToken
+            return self.fernet.decrypt(token)
+        except (InvalidToken, TypeError, ValueError):
             raise DecryptionError(
                 "Can't decrypt %s: the stored value was not encrypted with "
                 "any of the configured keys. Check FERNET_KEYS (or "
@@ -105,7 +117,7 @@ class EncryptedField(models.Field):
                 "DJFERNET_PREFIX (data written by djfernet < 0.8 needs "
                 "b'djfernet'), and that the column holds encrypted data."
                 % self
-            ) from exc
+            ) from None
 
     def from_db_value(self, value, expression, connection, *args):
         if value is not None:

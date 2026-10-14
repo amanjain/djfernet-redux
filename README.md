@@ -147,6 +147,12 @@ encrypted one doesn't work. Instead:
 
 **`DecryptionError: Can't decrypt <field>`**
 
+Text-encoded Fernet tokens returned by a legacy text column are accepted, including
+PostgreSQL's `\\x` hexadecimal bytea representation, as are bytes and database
+buffer values. This does not encrypt plaintext or repair a
+wrongly typed column. Invalid inputs raise the same field-specific error without
+including their contents.
+
 A stored value doesn't decrypt with any configured key. Check that `FERNET_KEYS` (or
 `SECRET_KEY`) still includes the key the data was written with, `FERNET_USE_HKDF`, and
 `DJFERNET_PREFIX` for data from djfernet 0.7. It also happens when the column holds
