@@ -29,6 +29,143 @@ class TestEncryptedField(object):
 
         assert f.keys == settings.FERNET_KEYS
 
+    def test_alter_plaintext_field_does_not_encrypt_existing_rows(self, transactional_db):
+        """A real AlterField changes the column but does not encrypt old data."""
+        from django.db.migrations import AlterField
+        from django.db.migrations.state import ModelState, ProjectState
+
+        # Render the existing model as it would exist in an older migration.
+        plain_state = ProjectState()
+        plain_model_state = ModelState(
+            'test', 'EncryptedText',
+            [('id', models.EncryptedText._meta.pk.clone()),
+             ('value', dj_models.TextField())],
+        )
+        plain_state.add_model(plain_model_state)
+        legacy_model = plain_state.apps.get_model('test', 'EncryptedText')
+        plain_field = legacy_model._meta.get_field('value')
+        encrypted_field = models.EncryptedText._meta.get_field('value')
+        with connection.schema_editor() as editor:
+            editor.alter_field(models.EncryptedText, encrypted_field, plain_field)
+        try:
+            obj = legacy_model.objects.create(value='existing private data')
+            encrypted_state = plain_state.clone()
+            operation = AlterField('encryptedtext', 'value', fields.EncryptedTextField())
+            operation.state_forwards('test', encrypted_state)
+            with connection.schema_editor() as editor:
+                operation.database_forwards('test', editor, plain_state, encrypted_state)
+
+            migrated_model = encrypted_state.apps.get_model('test', 'EncryptedText')
+            # The migration leaves plaintext: SQLite may return str, PostgreSQL bytes.
+            # Accept the existing TypeError or the clearer decryption error: neither
+            # repairs the missing encryption, including after input handling is fixed.
+            with pytest.raises((TypeError, fields.DecryptionError)):
+                migrated_model.objects.get(pk=obj.pk)
+            with connection.cursor() as cur:
+                cur.execute(
+                    'SELECT value FROM %s WHERE id = %%s'
+                    % models.EncryptedText._meta.db_table, [obj.pk],
+                )
+                stored = cur.fetchone()[0]
+            assert force_bytes(stored) == b'existing private data'
+        finally:
+            # Restore the original table even if migration or assertion fails.
+            with connection.schema_editor() as editor:
+                editor.alter_field(models.EncryptedText, plain_field, encrypted_field)
+
+    def test_plaintext_data_migration_encrypts_existing_rows(self, transactional_db):
+        from django.db.migrations import AddField, RemoveField, RenameField, RunPython
+        from django.db.migrations.state import ModelState, ProjectState
+        from fernet_fields.migrations import encrypt_field_values
+
+        state = ProjectState()
+        state.add_model(ModelState(
+            'test', 'EncryptedText',
+            [('id', models.EncryptedText._meta.pk.clone()),
+             ('value', dj_models.TextField(null=True))],
+        ))
+        legacy_model = state.apps.get_model('test', 'EncryptedText')
+        with connection.schema_editor() as editor:
+            editor.alter_field(
+                models.EncryptedText, models.EncryptedText._meta.get_field('value'),
+                legacy_model._meta.get_field('value'))
+        try:
+            values = ['existing private data', 'café', '', None]
+            for value in values:
+                legacy_model.objects.create(value=value)
+
+            def encrypt_values(apps, schema_editor):
+                encrypt_field_values(
+                    apps, schema_editor, 'test.EncryptedText',
+                    'value', 'encrypted_value', batch_size=1)
+
+            operations = [
+                AddField('encryptedtext', 'encrypted_value',
+                         fields.EncryptedTextField(null=True)),
+                RunPython(encrypt_values),
+                RemoveField('encryptedtext', 'value'),
+                RenameField('encryptedtext', 'encrypted_value', 'value'),
+            ]
+            for operation in operations:
+                new_state = state.clone()
+                operation.state_forwards('test', new_state)
+                with connection.schema_editor() as editor:
+                    operation.database_forwards('test', editor, state, new_state)
+                state = new_state
+
+            migrated_model = state.apps.get_model('test', 'EncryptedText')
+            assert list(migrated_model.objects.order_by('pk').values_list(
+                'value', flat=True)) == values
+            field = migrated_model._meta.get_field('value')
+            with connection.cursor() as cur:
+                cur.execute('SELECT value FROM %s ORDER BY id'
+                            % models.EncryptedText._meta.db_table)
+                stored = [row[0] for row in cur.fetchall()]
+            for raw, value in zip(stored, values):
+                if value is None:
+                    assert raw is None
+                else:
+                    assert field.fernet.decrypt(bytes(raw)).decode() == value
+                    assert bytes(raw) != value.encode()
+            with connection.cursor() as cur:
+                columns = connection.introspection.get_table_description(
+                    cur, models.EncryptedText._meta.db_table)
+            assert [column.name for column in columns] == ['id', 'value']
+        finally:
+            with connection.schema_editor() as editor:
+                editor.delete_model(models.EncryptedText)
+                editor.create_model(models.EncryptedText)
+
+    def test_encryption_migration_rolls_back_if_a_value_cannot_be_copied(self, transactional_db):
+        from django.db.migrations import AddField
+        from django.db.migrations.state import ModelState, ProjectState
+        from fernet_fields.migrations import encrypt_field_values
+
+        state = ProjectState()
+        state.add_model(ModelState.from_model(models.EncryptedText))
+        operation = AddField('encryptedtext', 'integer_value',
+                             fields.EncryptedIntegerField(null=True))
+        new_state = state.clone()
+        operation.state_forwards('test', new_state)
+        model = new_state.apps.get_model('test', 'EncryptedText')
+        target = model._meta.get_field('integer_value')
+        with connection.schema_editor() as editor:
+            operation.database_forwards('test', editor, state, new_state)
+        try:
+            model.objects.create(value='1')
+            model.objects.create(value='not-an-integer')
+            with connection.schema_editor() as editor:
+                with pytest.raises(ValueError):
+                    encrypt_field_values(new_state.apps, editor, 'test.EncryptedText',
+                                         'value', 'integer_value', batch_size=1)
+            assert list(model.objects.order_by('pk').values_list(
+                'integer_value', flat=True)) == [None, None]
+            assert list(model.objects.order_by('pk').values_list(
+                'value', flat=True)) == ['1', 'not-an-integer']
+        finally:
+            with connection.schema_editor() as editor:
+                editor.remove_field(model, target)
+
     def test_fallback_to_secret_key(self, settings):
         """If no FERNET_KEY setting, use SECRET_KEY."""
         f = fields.EncryptedTextField()

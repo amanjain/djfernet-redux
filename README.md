@@ -165,6 +165,55 @@ encrypted one doesn't work. Instead:
    through the ORM encrypts them.
 3. Remove the old field and, if needed, rename the new one.
 
+### Copying plaintext safely
+
+Back up the database and pause application writes while migrating. Add a separate
+nullable encrypted column, copy through the ORM, and only then remove the original
+and rename the replacement. This example migrates `myapp.Customer.tax_id`:
+
+```python
+from django.db import migrations
+from fernet_fields import EncryptedTextField
+from fernet_fields.migrations import encrypt_field_values
+
+
+def encrypt_tax_ids(apps, schema_editor):
+    encrypt_field_values(
+        apps, schema_editor, "myapp.Customer",
+        "tax_id", "encrypted_tax_id", batch_size=500,
+    )
+
+
+class Migration(migrations.Migration):
+    dependencies = [("myapp", "0001_initial")]
+    operations = [
+        migrations.AddField(
+            model_name="customer", name="encrypted_tax_id",
+            field=EncryptedTextField(null=True),
+        ),
+        migrations.RunPython(encrypt_tax_ids),
+        migrations.RemoveField(model_name="customer", name="tax_id"),
+        migrations.RenameField(
+            model_name="customer", old_name="encrypted_tax_id", new_name="tax_id",
+        ),
+    ]
+```
+
+Use your actual dependency and matching encrypted field type. The helper uses
+historical models and the schema editor's database alias, retains SQL `NULL`, and
+rolls back the copy if any value fails. Its source and target must be different
+columns. For compound searchable email fields, use a custom data migration that
+also populates the hash column.
+
+This example intentionally has no automatic reverse operation: reversing the copy
+would expose plaintext. Retain the backup and verify the resulting data before
+removing the source column. You may split these operations across deployments to
+keep the original column until verification is complete.
+
+This migrates existing plaintext; it cannot recover missing encryption keys or
+bytes truncated by old versions. Do not try it on a damaged encrypted source
+column unless the values can already be read with the correct keys.
+
 ## Troubleshooting
 
 **`DecryptionError: Can't decrypt <field>`**
