@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add audit_encrypted_fields(), a read-only scan that reports unreadable encrypted fields by row identifier without exposing stored values.
+
 ## 1.0.0 (djfernet-redux)
 
 First release as `djfernet-redux`, a drop-in replacement for djfernet 0.8.1

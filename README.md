@@ -133,6 +133,28 @@ Filtering, indexing or enforcing uniqueness on encrypted data can't work, so:
 The admin and forms show decrypted values, so restrict admin access and `list_display`
 accordingly.
 
+## Auditing existing data
+
+A normal ORM scan stops at the first unreadable encrypted value. To inspect the
+selected rows without modifying them or returning their private contents:
+
+```python
+from fernet_fields.audit import audit_encrypted_fields
+
+for failure in audit_encrypted_fields(Customer.objects.all(), batch_size=500):
+    print(failure.model, failure.pk, failure.field, failure.reason)
+```
+
+Pass `fields=["tax_id"]` to limit the fields inspected. Queryset filtering and the
+database alias are preserved. Each result contains only the model label, primary
+key, field name and a reason: `cannot-decrypt`, `invalid-storage` or `invalid-value`.
+Treat identifiers in audit reports as sensitive and restrict access to them.
+
+`cannot-decrypt` does not distinguish an incorrect key from damaged ciphertext.
+The audit cannot recover lost keys, repair corrupted data or infer that a column
+should be treated as plaintext. It ignores SQL `NULL` values. Database driver and
+query errors still propagate; they are not reported as individual data failures.
+
 ## Migrations
 
 The database can't encrypt existing values, so `AlterField` from a plain field to an
