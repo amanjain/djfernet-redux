@@ -5,6 +5,7 @@
 - Accept text-encoded Fernet tokens and report invalid input with a field-specific DecryptionError; remove the known-failure markers from the regression tests.
 - Add audit_encrypted_fields(), a read-only scan that reports unreadable encrypted fields by row identifier without exposing stored values.
 - Add encrypt_field_values() for an explicit, atomic RunPython copy into a separate encrypted column, with a tested complete migration example.
+- Add an optional MaskedEncryptedAdminMixin that excludes encrypted edit fields and masks their named admin displays without reading their values.
 
 ## 1.0.0 (djfernet-redux)
 

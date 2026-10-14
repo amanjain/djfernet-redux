@@ -314,6 +314,68 @@ class TestEncryptedField(object):
         with pytest.raises(ImproperlyConfigured):
             fields.EncryptedIntegerField(**{key: True})
 
+    def test_default_admin_form_displays_decrypted_value(self, db):
+        """Encryption at rest does not mask the existing admin edit form."""
+        from django.contrib.admin import AdminSite, ModelAdmin
+
+        obj = models.EncryptedText.objects.create(value='private-admin-value')
+        obj.refresh_from_db()
+        model_admin = ModelAdmin(models.EncryptedText, AdminSite())
+        form_class = model_admin.get_form(None, obj=obj)
+        form = form_class(instance=obj)
+
+        assert obj.value == 'private-admin-value'
+        assert form['value'].value() == 'private-admin-value'
+        assert 'private-admin-value' in str(form['value'])
+        with connection.cursor() as cur:
+            cur.execute(
+                'SELECT value FROM %s WHERE id = %%s'
+                % models.EncryptedText._meta.db_table, [obj.pk],
+            )
+            assert b'private-admin-value' not in bytes(cur.fetchone()[0])
+
+    def test_masked_admin_hides_values_in_forms_and_lists(self, db):
+        from django.contrib.admin import AdminSite, ModelAdmin
+        from fernet_fields.admin import MaskedEncryptedAdminMixin
+
+        class MaskedAdmin(MaskedEncryptedAdminMixin, ModelAdmin):
+            list_display = ('id', 'value')
+            fieldsets = ((None, {'fields': (('id', 'value'),)}),)
+            readonly_fields = ('id',)
+
+        obj = models.EncryptedText.objects.create(value='private-admin-value')
+        model_admin = MaskedAdmin(models.EncryptedText, AdminSite())
+        form_class = model_admin.get_form(None, obj=obj)
+        assert 'value' not in form_class.base_fields
+        assert model_admin.get_readonly_fields(None, obj) == ('id', '_masked_value')
+        assert model_admin.get_list_display(None) == ('id', '_masked_value')
+        assert model_admin.get_fieldsets(None, obj)[0][1]['fields'] == (
+            ('id', '_masked_value'),)
+        assert model_admin._masked_value(obj) == '********'
+        # Saving the form must not clear the hidden encrypted value.
+        form = form_class({}, instance=obj)
+        assert form.is_valid()
+        form.save()
+        obj.refresh_from_db()
+        assert obj.value == 'private-admin-value'
+
+    def test_masked_admin_does_not_reuse_a_custom_display_callback(self, db):
+        from django.contrib.admin import AdminSite, ModelAdmin
+        from fernet_fields.admin import MaskedEncryptedAdminMixin
+
+        class CustomAdmin(MaskedEncryptedAdminMixin, ModelAdmin):
+            list_display = ('id', 'value')
+
+            def _masked_value(self, obj):
+                return obj.value
+
+        obj = models.EncryptedText.objects.create(value='private-admin-value')
+        model_admin = CustomAdmin(models.EncryptedText, AdminSite())
+        name = model_admin.get_list_display(None)[1]
+        assert getattr(model_admin, name)(obj) == '********'
+        assert model_admin.get_list_display(None)[1] == name
+        assert 'value' not in model_admin.get_form(None, obj=obj).base_fields
+
     def test_get_integer_field_validators(self):
         f = fields.EncryptedIntegerField()
 
