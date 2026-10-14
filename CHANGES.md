@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add an optional MaskedEncryptedAdminMixin that excludes encrypted edit fields and masks their named admin displays without reading their values.
+
 ## 1.0.0 (djfernet-redux)
 
 First release as `djfernet-redux`, a drop-in replacement for djfernet 0.8.1

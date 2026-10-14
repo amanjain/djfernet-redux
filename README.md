@@ -130,8 +130,27 @@ Filtering, indexing or enforcing uniqueness on encrypted data can't work, so:
 - Ordering by an encrypted field doesn't raise, but it orders by the encrypted bytes,
   which is meaningless.
 
-The admin and forms show decrypted values, so restrict admin access and `list_display`
-accordingly.
+The default admin and forms show decrypted values. To hide encrypted fields in
+admin edit forms and mask their named displays, use the optional mixin:
+
+```python
+from django.contrib import admin
+from fernet_fields.admin import MaskedEncryptedAdminMixin
+
+@admin.register(Customer)
+class CustomerAdmin(MaskedEncryptedAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "tax_id")
+```
+
+The mixin excludes encrypted inputs, preserves their stored values on form saves,
+and displays a fixed `********` placeholder in readonly fields and named list
+columns. Configured fieldsets are handled too. It intentionally disables editing
+these fields through this admin; use a separate permission-controlled workflow
+when authorized users need to change them.
+
+Custom display callbacks, admin actions, exports and other application views must
+apply their own permissions and masking. Decrypted model attributes remain
+available to application code; this is a display helper, not an access boundary.
 
 ## Migrations
 
