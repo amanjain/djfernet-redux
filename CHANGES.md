@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in searchable encrypted email using a separate HMAC equality column, normalized uniqueness and synchronized instance/bulk writes.
+
 ## 1.0.0 (djfernet-redux)
 
 First release as `djfernet-redux`, a drop-in replacement for djfernet 0.8.1
